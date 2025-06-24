@@ -85,7 +85,13 @@ class LHDRetriever:
                     "For WSL, it should be accessible at /mnt/c/LABCOM/Retrieve/bin/Retrieve.exe"
                 )
         
-        self.working_dir = working_dir or tempfile.gettempdir()
+        # Set working directory to Retrieve.exe directory by default
+        if working_dir:
+            self.working_dir = working_dir
+        else:
+            # Use the parent directory of Retrieve.exe as working directory
+            import os
+            self.working_dir = os.path.dirname(os.path.abspath(self.retrieve_path))
         
     def _run_retrieve(self, diag_name: str, shot_no: int, subshot_no: int, 
                      ch_no_name: int, file_prefix: Optional[str] = None, 
