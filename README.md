@@ -29,12 +29,6 @@ A comprehensive Python interface for retrieving, processing, and analyzing LHD m
 
 ## 📦 Installation
 
-### From PyPI (when available)
-
-```bash
-pip install lhd-retrieve
-```
-
 ### From GitHub Source
 
 ```bash
@@ -42,11 +36,14 @@ pip install lhd-retrieve
 git clone https://github.com/UedaKenji/lhd-retrieve.git
 cd lhd-retrieve
 
-# Install in development mode
+# Install in development mode (for development)
 pip install -e .
 
+# Or install normally (for users)
+pip install .
+
 # Or install with optional dependencies
-pip install -e .[dev,plotting]
+pip install .[dev,plotting]
 ```
 
 ### Manual Installation
