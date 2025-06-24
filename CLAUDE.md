@@ -118,9 +118,26 @@ The system supports various plasma diagnostics including:
 - Graceful degradation for missing time axis data
 - Warning-based error reporting for non-critical failures
 
-## Example Usage Patterns
+## Development Workflow
 
-See `examples/` directory for common usage patterns:
-- `basic_usage.py`: Single channel retrieval with environment checks
-- `batch_processing.py`: Multi-shot and multi-channel processing
-- `lhd_magnetics_example.py`: Magnetic diagnostics specific example
+### Version Management
+
+- **ALWAYS bump version before pushing to GitHub**
+- Follow semantic versioning (MAJOR.MINOR.PATCH):
+  - PATCH (0.1.0 → 0.1.1): Bug fixes, small improvements
+  - MINOR (0.1.0 → 0.2.0): New features, backwards compatible
+  - MAJOR (0.1.0 → 1.0.0): Breaking changes
+- Update version in `pyproject.toml` before git push
+- Create separate commit for version bump
+
+### Git Workflow
+
+```bash
+# 1. Make code changes
+# 2. Update version in pyproject.toml
+git add pyproject.toml
+git commit -m "Bump version to X.Y.Z"
+
+# 3. Push changes
+git push origin main
+```

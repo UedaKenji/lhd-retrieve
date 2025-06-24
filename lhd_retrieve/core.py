@@ -378,6 +378,7 @@ class LHDRetriever:
                                   voltage_conversion: bool = False) -> Dict[int, LHDData]:
         """
         Retrieve data for multiple channels from the same shot.
+        Time axis is shared across all channels for efficiency.
         
         Args:
             diag_name: Diagnostic name
@@ -391,18 +392,59 @@ class LHDRetriever:
             Dictionary mapping channel numbers to LHDData objects
         """
         results = {}
+        shared_time = None
+        shared_metadata = {}
         
-        for channel in channels:
+        for i, channel in enumerate(channels):
             try:
-                data = self.retrieve_data(
-                    diag_name=diag_name,
-                    shot=shot,
-                    subshot=subshot,
-                    channel=channel,
-                    time_axis=time_axis,
-                    voltage_conversion=voltage_conversion
-                )
-                results[channel] = data
+                # Prepare options
+                options = []
+                if time_axis:
+                    options.append('-T')
+                if voltage_conversion:
+                    options.append('-V')
+                
+                # Generate unique file prefix
+                file_prefix = f"retrieve_{diag_name}_{shot}_{subshot}_{channel}"
+                
+                try:
+                    dat_file, prm_file, time_file = self._run_retrieve(
+                        diag_name=diag_name,
+                        shot_no=shot,
+                        subshot_no=subshot,
+                        ch_no_name=channel,
+                        file_prefix=file_prefix,
+                        options=options
+                    )
+                    
+                    # Parse the output files
+                    data, time_data, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, voltage_conversion)
+                    
+                    # Use shared time for all channels (time should be identical across channels)
+                    if i == 0:
+                        # First channel: store time and metadata as shared
+                        shared_time = time_data
+                        shared_metadata = {k: v for k, v in metadata.items() if k not in ['channel']}
+                    
+                    results[channel] = LHDData(
+                        data=data,
+                        time=shared_time,  # Use shared time for all channels
+                        metadata={
+                            'diag_name': diag_name,
+                            'shot': shot,
+                            'subshot': subshot,
+                            'channel': channel,
+                            'time_axis': time_axis,
+                            'voltage_conversion': voltage_conversion,
+                            **shared_metadata  # Use shared metadata (excluding channel-specific data)
+                        },
+                        description=f"{diag_name} Shot {shot}.{subshot}, Channel {channel}"
+                    )
+                    
+                finally:
+                    # Clean up temporary files for this channel
+                    self._cleanup_temporary_files(file_prefix)
+                    
             except Exception as e:
                 warnings.warn(f"Failed to retrieve channel {channel}: {e}")
                 continue
