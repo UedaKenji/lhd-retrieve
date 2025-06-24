@@ -230,7 +230,7 @@ class LHDRetriever:
             )
             
             # Parse the output files
-            data, time, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file)
+            data, time, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, voltage_conversion)
             
             return LHDData(
                 data=data,
@@ -293,7 +293,7 @@ class LHDRetriever:
             # Don't let cleanup failures affect the main operation
             pass
     
-    def _parse_retrieve_files(self, dat_file: str, prm_file: str, time_file: str) -> tuple:
+    def _parse_retrieve_files(self, dat_file: str, prm_file: str, time_file: str, voltage_conversion: bool = False) -> tuple:
         """
         Parse output files from Retrieve.exe (.dat, .prm, .time).
         
@@ -301,6 +301,7 @@ class LHDRetriever:
             dat_file: Path to .dat file (measurement data)
             prm_file: Path to .prm file (parameters)
             time_file: Path to .time file (time axis data)
+            voltage_conversion: Whether voltage conversion was used
             
         Returns:
             Tuple of (data, time, metadata)
@@ -324,14 +325,19 @@ class LHDRetriever:
             raise FileNotFoundError(f"Data file not found: {dat_file}")
         
         try:
-            # Try reading as binary float32 (common format)
-            data = np.fromfile(dat_file, dtype=np.float32)
-            if len(data) == 0:
-                # Try float64
-                data = np.fromfile(dat_file, dtype=np.float64)
-            if len(data) == 0:
-                # Try int16
-                data = np.fromfile(dat_file, dtype=np.int16).astype(np.float32)
+            # Choose data type based on voltage conversion setting
+            if voltage_conversion:
+                # For voltage conversion, use float32
+                data = np.fromfile(dat_file, dtype=np.float32)
+                if len(data) == 0:
+                    # Try float64 as fallback
+                    data = np.fromfile(dat_file, dtype=np.float64)
+            else:
+                # For raw data, use int32
+                data = np.fromfile(dat_file, dtype=np.int32)
+                if len(data) == 0:
+                    # Try int16 as fallback
+                    data = np.fromfile(dat_file, dtype=np.int16).astype(np.int32)
                 
         except Exception as e:
             # Fallback: try reading as text
