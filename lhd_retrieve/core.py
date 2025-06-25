@@ -2,7 +2,7 @@ import os
 import subprocess
 import tempfile
 import warnings
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 
 import numpy as np
@@ -41,6 +41,49 @@ class LHDData:
         df = self.to_pandas()
         df.to_csv(filename, index=False)
     
+    def get_val(self) -> np.ndarray:
+        """Convert raw data to voltage values using VResolution and VOffset from metadata."""
+        #metadataにVResolutionかVCoefficient1があればその値を使う
+        vresolution = None 
+        if 'VResolution' in self.metadata:
+            vresolution = self.metadata['VResolution']
+        elif 'VCoefficient1' in self.metadata:
+            vresolution = self.metadata['VCoefficient1']
+        else:
+            raise ValueError("VResolution or VCoefficient1 not found in metadata. Cannot convert to voltage.")
+        #metadataにVOffsetあるいはVCoefficient0があればその値を使う
+        voffset = None
+        if 'VOffset' in self.metadata:
+            voffset = self.metadata['VOffset']
+        elif 'VCoefficient0' in self.metadata:
+            voffset = self.metadata['VCoefficient0']
+        else:
+            voffset = 0.0   
+        
+        try:
+            vresolution = float(vresolution)
+            voffset = float(voffset)
+        except (ValueError, TypeError):
+            raise ValueError("VResolution or VOffset values are not numeric")
+        
+        return self.data * vresolution + voffset
+    
+    @property
+    def val(self) -> np.ndarray:
+        """Get voltage values from data using VResolution and VOffset."""
+        ## self._val を使うことで、get_val()を毎回呼び出す必要がなくなる
+        if not hasattr(self, '_val'):
+            self._val = self.get_val()
+        # もし _val がまだ定義されていなければ、get_val() を呼び出して計算する
+        # これにより、get_val() の計算が一度だけ行われ、以降はキャッシュされた値を返す
+        return self._val
+    
+    # valの他にvoltageをエイリアス
+    @property
+    def voltage(self) -> np.ndarray:
+        """Get voltage values from data using VResolution and VOffset."""
+        return self.val
+
     def plot(self, **kwargs):
         """Plot the data using matplotlib."""
         try:
@@ -129,7 +172,10 @@ class LHDRetriever:
             )
             
             if result.returncode != 0:
-                raise RuntimeError(f"Retrieve.exe failed: {result.stderr}")
+                raise RuntimeError(f"Retrieve.exe failed: {result.stderr}\n"+
+                                      f"Command: {' '.join(cmd)}\n"+
+                                      f"cwd: {self.working_dir}")
+                                   
             
             # Determine output files based on actual Retrieve.exe naming convention
             # Retrieve.exe creates files with pattern: prefix-shot-subshot-channel.ext
@@ -189,9 +235,9 @@ class LHDRetriever:
                      shot: int, 
                      subshot: int,
                      channel: int, 
-                     time_axis: bool = True,
-                     voltage_conversion: bool = False,
-                     frame_number: Optional[int] = None) -> LHDData:
+                     time_axis: bool = False,
+                     frame_number: Optional[int] = None,
+                     dtype: Optional[Union[str, np.dtype]] = None) -> LHDData:
         """
         Retrieve measurement data using LHD Retrieve.exe format.
         
@@ -201,8 +247,8 @@ class LHDRetriever:
             subshot: Sub-shot number (usually 1)
             channel: Channel number
             time_axis: Generate time axis information (-T option)
-            voltage_conversion: Convert to voltage values (-V option)
             frame_number: Specific frame number (-f option)
+            dtype: Data type for reading binary data (str like 'float32', 'int8' or numpy dtype like np.float32, np.int8)
             
         Returns:
             LHDData object containing the retrieved data
@@ -211,8 +257,6 @@ class LHDRetriever:
         options = []
         if time_axis:
             options.append('-T')
-        if voltage_conversion:
-            options.append('-V')
         if frame_number is not None:
             options.extend(['-f', str(frame_number)])
         
@@ -230,7 +274,7 @@ class LHDRetriever:
             )
             
             # Parse the output files
-            data, time, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, voltage_conversion)
+            data, time, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, dtype)
             
             return LHDData(
                 data=data,
@@ -241,8 +285,8 @@ class LHDRetriever:
                     'subshot': subshot,
                     'channel': channel,
                     'time_axis': time_axis,
-                    'voltage_conversion': voltage_conversion,
                     'frame_number': frame_number,
+                    'dtype': dtype,
                     **metadata
                 },
                 description=f"{diag_name} Shot {shot}.{subshot}, Channel {channel}"
@@ -251,6 +295,7 @@ class LHDRetriever:
         finally:
             # Clean up ALL temporary files generated by Retrieve.exe
             self._cleanup_temporary_files(file_prefix)
+            pass
     
     def _cleanup_temporary_files(self, file_prefix: str) -> None:
         """
@@ -293,7 +338,7 @@ class LHDRetriever:
             # Don't let cleanup failures affect the main operation
             pass
     
-    def _parse_retrieve_files(self, dat_file: str, prm_file: str, time_file: str, voltage_conversion: bool = False) -> tuple:
+    def _parse_retrieve_files(self, dat_file: str, prm_file: str, time_file: str, dtype: Optional[Union[str, np.dtype]] = None) -> tuple:
         """
         Parse output files from Retrieve.exe (.dat, .prm, .time).
         
@@ -301,7 +346,7 @@ class LHDRetriever:
             dat_file: Path to .dat file (measurement data)
             prm_file: Path to .prm file (parameters)
             time_file: Path to .time file (time axis data)
-            voltage_conversion: Whether voltage conversion was used
+            dtype: Data type for reading binary data (str or numpy dtype)
             
         Returns:
             Tuple of (data, time, metadata)
@@ -311,33 +356,30 @@ class LHDRetriever:
         # Read parameter file (.prm)
         if os.path.exists(prm_file):
             try:
-                with open(prm_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and '=' in line:
-                            key, value = line.split('=', 1)
-                            metadata[key.strip()] = value.strip()
-            except Exception as e:
-                warnings.warn(f"Failed to read parameter file {prm_file}: {e}")
-        
+                #prm_fileはcsv形式で保存されており，２列目をキー，3列目を値として読み込む
+                prm_data = pd.read_csv(prm_file, header=None, index_col=1)
+                prm_data = prm_data.iloc[:, 1]  # Get second column as values
+                metadata = prm_data.to_dict()  # Convert to dictionary
+            except pd.errors.EmptyDataError:
+                warnings.warn(f"Parameter file {prm_file} is empty or malformed.")
+            except FileNotFoundError:
+                warnings.warn(f"Parameter file not found: {prm_file}")
+
         # Read data file (.dat)
         if not os.path.exists(dat_file):
             raise FileNotFoundError(f"Data file not found: {dat_file}")
         
         try:
-            # Choose data type based on voltage conversion setting
-            if voltage_conversion:
-                # For voltage conversion, use float32
-                data = np.fromfile(dat_file, dtype=np.float32)
-                if len(data) == 0:
-                    # Try float64 as fallback
-                    data = np.fromfile(dat_file, dtype=np.float64)
+            # Choose data type based on dtype parameter
+            if dtype is not None:
+                # Handle both string and numpy dtype objects
+                data = np.fromfile(dat_file, dtype=dtype)
             else:
-                # For raw data, use int32
-                data = np.fromfile(dat_file, dtype=np.int32)
+                # For raw data, use int16
+                data = np.fromfile(dat_file, dtype=np.int16)
                 if len(data) == 0:
                     # Try int16 as fallback
-                    data = np.fromfile(dat_file, dtype=np.int16).astype(np.int32)
+                    data = np.fromfile(dat_file, dtype=np.int8).astype(np.int16)
                 
         except Exception as e:
             # Fallback: try reading as text
@@ -348,25 +390,28 @@ class LHDRetriever:
         
         # Read time file (.time) if available
         time_data = None
-        if os.path.exists(time_file):
-            try:
-                time_data = np.fromfile(time_file, dtype=np.float32)
-                if len(time_data) == 0:
-                    time_data = np.fromfile(time_file, dtype=np.float64)
-            except Exception as e:
-                warnings.warn(f"Failed to read time file {time_file}: {e}")
-        
-        # Generate time axis if not available
-        if time_data is None or len(time_data) != len(data):
-            # Use sampling rate from metadata if available
-            sampling_rate = metadata.get('SamplingRate', metadata.get('sampling_rate', 1.0))
-            try:
-                sampling_rate = float(sampling_rate)
-            except (ValueError, TypeError):
-                sampling_rate = 1.0
+        if data.size > 10000000:
+            print("Warning: Data size is very large, generating time axis is skipped.")
+        else:
+            if os.path.exists(time_file):
+                try:
+                    time_data = np.fromfile(time_file, dtype=np.float32)
+                    if len(time_data) == 0:
+                        time_data = np.fromfile(time_file, dtype=np.float64)
+                except Exception as e:
+                    warnings.warn(f"Failed to read time file {time_file}: {e}")
             
-            time_data = np.arange(len(data)) / sampling_rate
-        
+            # Generate time axis if not available
+            if time_data is None or len(time_data) != len(data):
+                # Use sampling rate from metadata if available
+                sampling_rate = metadata.get('SamplingRate', metadata.get('sampling_rate', 1.0))
+                try:
+                    sampling_rate = float(sampling_rate)
+                except (ValueError, TypeError):
+                    sampling_rate = 1.0
+                
+                time_data = np.arange(len(data)) / sampling_rate
+            
         return data, time_data, metadata
     
     def retrieve_multiple_channels(self, 
@@ -374,8 +419,7 @@ class LHDRetriever:
                                   shot: int,
                                   subshot: int,
                                   channels: List[int],
-                                  time_axis: bool = True,
-                                  voltage_conversion: bool = False) -> Dict[int, LHDData]:
+                                  time_axis: bool = True) -> Dict[int, LHDData]:
         """
         Retrieve data for multiple channels from the same shot.
         Time axis is shared across all channels for efficiency.
@@ -386,7 +430,6 @@ class LHDRetriever:
             subshot: Sub-shot number
             channels: List of channel numbers
             time_axis: Generate time axis information
-            voltage_conversion: Convert to voltage values
             
         Returns:
             Dictionary mapping channel numbers to LHDData objects
@@ -401,8 +444,6 @@ class LHDRetriever:
                 options = []
                 if time_axis:
                     options.append('-T')
-                if voltage_conversion:
-                    options.append('-V')
                 
                 # Generate unique file prefix
                 file_prefix = f"retrieve_{diag_name}_{shot}_{subshot}_{channel}"
@@ -418,7 +459,7 @@ class LHDRetriever:
                     )
                     
                     # Parse the output files
-                    data, time_data, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, voltage_conversion)
+                    data, time_data, metadata = self._parse_retrieve_files(dat_file, prm_file, time_file, None)
                     
                     # Use shared time for all channels (time should be identical across channels)
                     if i == 0:
@@ -435,7 +476,6 @@ class LHDRetriever:
                             'subshot': subshot,
                             'channel': channel,
                             'time_axis': time_axis,
-                            'voltage_conversion': voltage_conversion,
                             **shared_metadata  # Use shared metadata (excluding channel-specific data)
                         },
                         description=f"{diag_name} Shot {shot}.{subshot}, Channel {channel}"
