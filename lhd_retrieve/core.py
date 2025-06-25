@@ -66,7 +66,15 @@ class LHDData:
         except (ValueError, TypeError):
             raise ValueError("VResolution or VOffset values are not numeric")
         
-        return self.data * vresolution + voffset
+        if self.data.dtype == np.int8:
+            # int8の場合は、int16に変換してから計算する
+            val = self.data.astype(np.float32) * vresolution + voffset
+        else:
+            # int16やfloat32の場合はそのまま計算する
+            val = self.data * vresolution + voffset
+
+        return val
+        
     
     @property
     def val(self) -> np.ndarray:
